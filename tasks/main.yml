@@ -1,0 +1,83 @@
+---
+# tasks file for roles/rollac-svc
+###############################################
+# 방화벽 포트 제거
+# 서비스 종료
+# 서비스 설정 삭제
+# 패키지 삭제
+###############################################
+- name: 기본 변수 디폴트 설정
+  ansible.builtin.set_fact:
+    fw_svcs: "{{ fw_svcs | default([]) }}"
+    svcs: "{{ svcs | default([]) }}"
+    files: "{{ files | default([]) }}"
+    pkgs: "{{ pkgs | default([]) }}"
+    force_delete_core_dirs: "{{ force_delete_core_dirs | default(false) }}"
+
+- name: 서비스/패키지 팩트 수집
+  block:
+    - name: 서비스 팩트 수집
+      ansible.builtin.service_facts:
+    - name: 패키지 팩트 수집
+      ansible.builtin.package_facts:
+        manager: auto
+
+- name: 방화벽 포트 제거
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: "{{ fw_svcs }}"
+  when:
+    - "'filewalld.service' in ansible_facts.services | default({})"
+    - "ansible_facts.services['firewalld.service'].state == 'running'"
+    - fw_svcs | length > 0
+  failed_when: false
+
+# firewalld 서비스가 설치되고 실행 중일 때만 방화벽 설정을 변경함.
+
+# 없는 환경에서 실행하면 에러나니까 조건으로 걸러줌.
+
+# failed_when: false → 알 수 없는 서비스여도 실패하지 않음.  
+
+- name: 서비스 종료/비활성화 (유닛 미존재 허용)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ svcs }}"
+  failed_when: false
+
+# 지정된 서비스 중 없거나 이미 중지된 서비스라도 실패하지 않고 넘어감.
+
+# 여러 번 실행해도 안전한 구조.
+
+- name: 서비스 설정 삭제 - 위험 경로
+  ansible.builtin.set_fact:
+    _dangerous_files: >-
+      {{ files | select('match', '^/$|^/(etc|var)(/)?$') | list }}
+    _safe_files: >-
+      {{ files | reject('match', '^/$|^/(etc|var)(/)?$') | list }}
+
+- name: 보호-핵심 디렉터리 삭제 시도 차단(기본)
+  ansible:builtin.assert:
+    that:
+      - _dangerous_files | length == 0 or force_delete_core_dirs
+    fail_msg: >-
+      [차단] 매우 위험한 경로({_dangerous_files}) 삭제 시도가 감지됨.
+      삭제 시 force_delete_core_dirs=true로 지정
+
+- name: 서비스 설정/파일 삭제(안전)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ _safe_files }}"
+  failed_when:
+
+- name: 패키지 삭제
+  ansible.builtin.dnf:
+    name: "{{ pkgs }}"
+    state: absent
+  when: pkgs | length > 0
+  failed_when: false
