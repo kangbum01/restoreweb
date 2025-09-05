@@ -1,6 +1,0 @@
----
-# handlers file for roles/myvhost
-- name: restart httpd
-  ansible.builtin.systemd:
-    name: httpd
-    state: restarted
